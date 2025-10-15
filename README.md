@@ -7,6 +7,8 @@
 
 PSAliasFinder helps you discover and use shorter aliases for PowerShell commands, improving your terminal productivity. It automatically suggests aliases when you type long commands and provides tools to search for available aliases.
 
+![](example.png)
+
 ## Features
 
 - 🔍 **Intelligent Alias Search** - Find aliases for any PowerShell command
