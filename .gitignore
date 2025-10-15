@@ -1,0 +1,29 @@
+# PowerShell Module Build Artifacts
+*.nupkg
+publish/
+dist/
+
+# Test Results
+TestResults/
+*.trx
+
+# Coverage Reports
+coverage/
+*.coverage
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary Files
+*.tmp
+*.temp
+*.log
