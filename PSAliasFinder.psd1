@@ -4,7 +4,7 @@
 RootModule = 'bin/PSAliasFinder.dll'
 NestedModules = @('PSAliasFinder.psm1')
 
-ModuleVersion = '2.0.0'
+ModuleVersion = '2.0.1'
 
 # Fresh GUID for 2.0.0 — distinct from the provider's internal GUID.
 GUID = '7f15a70a-de01-4091-aa0f-339a5a1a6060'
@@ -34,6 +34,17 @@ PrivateData = @{
         ProjectUri = 'https://github.com/backmind/PSAliasFinder'
 
         ReleaseNotes = @'
+# PSAliasFinder 2.0.1
+
+Bugfix release. The 2.0.0 provider ran its alias enumeration in a private
+runspace, which meant it only saw PowerShell's built-in aliases — any alias
+defined in the user's $PROFILE was invisible. 2.0.1 switches the internal
+PowerShell instance to RunspaceMode.CurrentRunspace, so Get-Alias now
+returns the full alias table of the calling session and user-defined
+aliases trigger feedback as expected.
+
+Upgrade: Install-Module PSAliasFinder -Force.
+
 # PSAliasFinder 2.0.0
 
 BREAKING: minimum PowerShell version raised to 7.4. Alias suggestions now use

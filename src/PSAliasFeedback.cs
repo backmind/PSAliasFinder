@@ -18,7 +18,7 @@ public sealed class PSAliasFeedback
     public FeedbackTrigger Trigger => FeedbackTrigger.Success;
 
     private readonly System.Management.Automation.PowerShell _powershell
-        = System.Management.Automation.PowerShell.Create();
+        = System.Management.Automation.PowerShell.Create(RunspaceMode.CurrentRunspace);
     private readonly AliasCache _cache;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _recentSuggestions
         = new(StringComparer.OrdinalIgnoreCase);

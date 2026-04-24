@@ -18,7 +18,7 @@ try {
 
     Step "Exports"
     $mod = Get-Module PSAliasFinder
-    if ($mod.Version -ne '2.0.0') { FAIL "version = $($mod.Version), expected 2.0.0" } else { OK "version 2.0.0" }
+    if ($mod.Version -ne '2.0.1') { FAIL "version = $($mod.Version), expected 2.0.1" } else { OK "version 2.0.1" }
     $expectedFns = 'Find-Alias','Get-AliasFinderConfig','Set-AliasFinderConfig' | Sort-Object
     $actualFns = ($mod.ExportedFunctions.Keys | Sort-Object) -join ','
     if ($actualFns -eq ($expectedFns -join ',')) { OK "functions: $actualFns" } else { FAIL "functions: $actualFns" }
