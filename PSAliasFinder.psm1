@@ -1,134 +1,82 @@
-# ============================================
-# PSAliasFinder - PowerShell Alias Discovery Module
-# Based on the oh-my-zsh alias-finder plugin
-# ============================================
+# PSAliasFinder — PowerShell-side public surface.
+# Backend (feedback provider + alias cache + config I/O) lives in the
+# PSAliasFinder.dll loaded as RootModule.
 
-# ----------------------------
-# Function: CountActualPipes
-# ----------------------------
 function CountActualPipes {
-    <#
-    .SYNOPSIS
-        Counts the actual number of pipes in a PowerShell command.
-
-    .DESCRIPTION
-        Uses the PowerShell Abstract Syntax Tree (AST) to accurately count
-        pipes in a command, ignoring pipes within strings.
-
-    .PARAMETER Command
-        The command string to analyze.
-
-    .EXAMPLE
-        CountActualPipes "Get-Process | Where-Object Name -eq 'pwsh'"
-        Returns: 1
-    #>
     [CmdletBinding()]
     param([string]$Command)
 
     try {
-        $ast = [System.Management.Automation.Language.Parser]::ParseInput($Command, [ref]$null, [ref]$null)
-        $pipelineAsts = $ast.FindAll({
-            param($node)
-            $node -is [System.Management.Automation.Language.PipelineAst]
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $Command, [ref]$null, [ref]$null)
+        $pipelines = $ast.FindAll({
+            param($node) $node -is [System.Management.Automation.Language.PipelineAst]
         }, $true)
-
-        if ($pipelineAsts.Count -gt 0) {
-            return ($pipelineAsts[0].PipelineElements.Count - 1)
+        if ($pipelines.Count -gt 0) {
+            return ($pipelines[0].PipelineElements.Count - 1)
         }
         return 0
-    }
-    catch {
+    } catch {
         return 0
     }
 }
 
-# ----------------------------
-# Function: ShouldShowAliasSuggestion
-# ----------------------------
 function ShouldShowAliasSuggestion {
-    <#
-    .SYNOPSIS
-        Determines if an alias suggestion should be shown.
-
-    .DESCRIPTION
-        Applies intelligent filtering to avoid showing suggestions for:
-        - Short commands (less than 8 characters)
-        - Complex commands (multiple pipes or many arguments)
-        - Aliases that don't save enough characters
-
-    .PARAMETER OriginalCommand
-        The original command entered by the user.
-
-    .PARAMETER Alias
-        The alias object to evaluate.
-
-    .EXAMPLE
-        ShouldShowAliasSuggestion "Get-Process" $aliasObject
-    #>
     [CmdletBinding()]
     param(
         [string]$OriginalCommand,
         [PSCustomObject]$Alias
     )
 
+    $cfg = [PSAliasFinder.ProviderConfig]::Current
     $firstCommand = ($OriginalCommand -split '\|')[0].Trim()
 
-    # Selective criteria
-    if ($firstCommand.Length -lt 8) { return $false }
+    if ($firstCommand.Length -lt $cfg.MinCommandLength) { return $false }
 
     $pipeCount = CountActualPipes $OriginalCommand
     $argumentCount = ($OriginalCommand -split '\s+').Count
-    if ($pipeCount -gt 1 -or $argumentCount -gt 10) { return $false }
+    if ($pipeCount -gt $cfg.MaxPipes -or $argumentCount -gt $cfg.MaxArguments) { return $false }
 
     $absoluteSaving = $firstCommand.Length - $Alias.Name.Length
-    if ($absoluteSaving -lt 4) { return $false }
+    if ($absoluteSaving -lt $cfg.MinCharsSaved) { return $false }
 
     return $true
 }
 
-# ----------------------------
-# Function: Find-Alias
-# ----------------------------
 function Find-Alias {
     <#
     .SYNOPSIS
         Finds aliases for a given PowerShell command.
 
     .DESCRIPTION
-        Searches for existing aliases that match the specified command.
-        Supports multiple search modes and filtering options.
+        Explicit lookup surface preserved from 1.0.0. Independent of the IFeedbackProvider
+        subsystem: searches the current session's alias table directly and applies the
+        same default filter as the feedback provider (reading PSAliasFinder config for
+        thresholds). Use -Force to bypass the filter.
 
     .PARAMETER Command
-        The command to search aliases for. Accepts multiple words.
+        The command to search aliases for. Accepts multiple tokens.
 
     .PARAMETER Exact
-        Find only exact matches for the command.
+        Only exact matches.
 
     .PARAMETER Longer
-        Include aliases that are longer than the original command.
+        Include aliases whose definition contains the command (broader than Exact).
 
     .PARAMETER Cheaper
-        Only show aliases that are shorter than the original command.
+        Only aliases strictly shorter than the full command.
 
     .PARAMETER Quiet
-        Suppress console output, only return results.
+        Suppress console output; emit objects only.
 
     .PARAMETER Force
-        Bypass intelligent filtering and show all matches.
+        Bypass the default filter (MinCommandLength / MaxPipes / MaxArguments / MinCharsSaved).
 
     .EXAMPLE
         Find-Alias Get-ChildItem
-        Finds aliases for Get-ChildItem (e.g., gci, ls, dir)
-
-    .EXAMPLE
-        Find-Alias "Get-Process" -Exact
-        Finds only exact matches for Get-Process
-
-    .EXAMPLE
-        Find-Alias "docker ps" -Force
-        Shows all aliases for docker ps, bypassing filters
     #>
     [CmdletBinding()]
+    [Alias('af','alias-finder')]
     param (
         [Parameter(Mandatory=$true, ValueFromRemainingArguments=$true)]
         [string[]]$Command,
@@ -146,7 +94,6 @@ function Find-Alias {
     $currentCmd = $fullCommand
 
     while (-not [string]::IsNullOrWhiteSpace($currentCmd)) {
-        # Search for matching aliases
         $matchingAliases = Get-Alias | Where-Object {
             if ($Exact) {
                 $_.Definition -eq $currentCmd
@@ -184,181 +131,125 @@ function Find-Alias {
         $currentCmd = ($words[0..($words.Count-2)] -join ' ').Trim()
     }
 
-    # Apply selective criteria
     if (-not $Force) {
         $foundAliases = $foundAliases | Where-Object { ShouldShowAliasSuggestion $fullCommand $_ }
     }
 
-    # Display results
     if (-not $Quiet -and $foundAliases.Count -gt 0) {
-        $foundAliases | ForEach-Object {
-            Write-Host "$($_.Name) -> $($_.Definition)" -ForegroundColor Green
+        foreach ($alias in $foundAliases) {
+            Write-Host "$($alias.Name) -> $($alias.Definition)" -ForegroundColor Green
         }
     }
 
     return $foundAliases
 }
 
-# ----------------------------
-# Function: Test-CommandAlias
-# ----------------------------
-function Test-CommandAlias {
+function Get-AliasFinderConfig {
     <#
     .SYNOPSIS
-        Tests if a command has an available alias and suggests it.
+        Returns the current PSAliasFinder configuration.
 
     .DESCRIPTION
-        Internal function used by the Enter key hook to automatically
-        suggest aliases when commands are entered.
-
-    .PARAMETER Command
-        The command to test for available aliases.
-
-    .EXAMPLE
-        Test-CommandAlias "Get-ChildItem"
+        Emits the live ProviderConfig snapshot as a PSCustomObject, including the
+        on-disk config file path. Reflects the state the feedback provider is
+        actually using — after Set-AliasFinderConfig, the in-memory copy is
+        updated without reimporting.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory=$true)][string]$Command)
+    param()
 
-    try {
-        $cleanCommand = $Command.Trim() -replace '\s+', ' '
-        if ([string]::IsNullOrWhiteSpace($cleanCommand)) { return }
-
-        $firstToken = ($cleanCommand -split '\s+')[0]
-
-        # Count real pipes (not inside strings)
-        $pipeCount = CountActualPipes $cleanCommand
-
-        # Criteria: long command, max 1 pipe, not already an alias
-        if ($firstToken.Length -ge 8 -and
-            $pipeCount -le 1 -and
-            -not (Get-Alias -Name $firstToken -ErrorAction SilentlyContinue)) {
-
-            $aliasMatches = Get-Alias | Where-Object { $_.Definition -eq $firstToken }
-
-            if ($aliasMatches -and ($firstToken.Length - $aliasMatches[0].Name.Length) -ge 4) {
-                Write-Host "`nFound existing alias for `"$firstToken`". You should use: " -NoNewline -ForegroundColor Yellow
-                $aliasNames = $aliasMatches | ForEach-Object { "`"$($_.Name)`"" }
-                Write-Host ($aliasNames -join ", ") -ForegroundColor Magenta
-            }
-        }
-    }
-    catch {
-        Write-Debug "Error in Test-CommandAlias: $_"
+    $c = [PSAliasFinder.ProviderConfig]::Current
+    [pscustomobject]@{
+        Enabled          = $c.Enabled
+        MinCommandLength = $c.MinCommandLength
+        MaxPipes         = $c.MaxPipes
+        MaxArguments     = $c.MaxArguments
+        MinCharsSaved    = $c.MinCharsSaved
+        CooldownSeconds  = $c.CooldownSeconds
+        MaxSuggestions   = $c.MaxSuggestions
+        IgnoredCommands  = $c.IgnoredCommands
+        ConfigFile       = [PSAliasFinder.ProviderConfig]::ConfigFile
     }
 }
 
-# ----------------------------
-# Function: Set-AliasFinderHook
-# ----------------------------
-function Set-AliasFinderHook {
-    <#
-    .SYNOPSIS
-        Enables or disables the automatic alias detection hook.
-
-    .DESCRIPTION
-        Configures PSReadLine to automatically detect and suggest aliases
-        when the Enter key is pressed.
-
-    .PARAMETER Enable
-        Explicitly enable the hook and show confirmation message.
-
-    .PARAMETER Disable
-        Disable the hook and restore default Enter key behavior.
-
-    .EXAMPLE
-        Set-AliasFinderHook -Enable
-        Enables automatic alias detection
-
-    .EXAMPLE
-        Set-AliasFinderHook -Disable
-        Disables automatic alias detection
-    #>
-    [CmdletBinding()]
-    param(
-        [switch]$Enable,
-        [switch]$Disable
-    )
-
-    if ($Disable) {
-        Set-PSReadLineKeyHandler -Key Enter -Function AcceptLine
-        Write-Host "Alias finder disabled." -ForegroundColor Yellow
-        return
-    }
-
-    if (Get-Module PSReadLine -ErrorAction SilentlyContinue) {
-        Set-PSReadLineKeyHandler -Key Enter -BriefDescription "AliasFinder" -ScriptBlock {
-            $line = $null
-            $cursor = $null
-            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
-
-            if (-not [string]::IsNullOrWhiteSpace($line)) {
-                Test-CommandAlias -Command $line
-            }
-
-            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        }
-
-        if ($Enable) {
-            Write-Host "Alias finder enabled." -ForegroundColor Green
-        }
-    } else {
-        Write-Warning "PSReadLine module not found. Alias finder hook requires PSReadLine."
-    }
-}
-
-# ----------------------------
-# Function: Set-AliasFinderConfig
-# ----------------------------
 function Set-AliasFinderConfig {
     <#
     .SYNOPSIS
-        Configures the PSAliasFinder module behavior.
+        Updates and persists PSAliasFinder configuration.
 
     .DESCRIPTION
-        Sets global configuration for automatic alias detection.
+        Changes apply live: the JSON file at $env:APPDATA\PSAliasFinder\config.json
+        is rewritten and the in-memory ProviderConfig.Current is swapped, so the
+        feedback provider uses the new values on the next command without
+        reimporting the module.
 
-    .PARAMETER AutoLoad
-        Enable automatic alias detection on module load.
+    .PARAMETER Reset
+        Restore all defaults before applying any other parameters.
 
-    .EXAMPLE
-        Set-AliasFinderConfig -AutoLoad
-        Enables automatic alias detection
-
-    .EXAMPLE
-        Set-AliasFinderConfig
-        Disables automatic alias detection
+    .PARAMETER PassThru
+        Emit the resulting config object after saving.
     #>
     [CmdletBinding()]
-    param([switch]$AutoLoad)
+    param(
+        [bool]$Enabled,
+        [int]$MinCommandLength,
+        [int]$MaxPipes,
+        [int]$MaxArguments,
+        [int]$MinCharsSaved,
+        [int]$CooldownSeconds,
+        [int]$MaxSuggestions,
+        [string[]]$IgnoredCommands,
+        [string[]]$AddIgnored,
+        [string[]]$RemoveIgnored,
+        [switch]$Reset,
+        [switch]$PassThru
+    )
 
-    $global:PSAliasFinderConfig = @{ AutoLoad = $AutoLoad.IsPresent }
+    $current = [PSAliasFinder.ProviderConfig]::Current
 
-    if ($AutoLoad) {
-        Set-AliasFinderHook -Enable
+    if ($Reset) {
+        $config = [PSAliasFinder.ProviderConfig]::new()
     } else {
-        Set-AliasFinderHook -Disable
+        $config = [PSAliasFinder.ProviderConfig]::new()
+        $config.Enabled          = $current.Enabled
+        $config.MinCommandLength = $current.MinCommandLength
+        $config.MaxPipes         = $current.MaxPipes
+        $config.MaxArguments     = $current.MaxArguments
+        $config.MinCharsSaved    = $current.MinCharsSaved
+        $config.CooldownSeconds  = $current.CooldownSeconds
+        $config.MaxSuggestions   = $current.MaxSuggestions
+        $config.IgnoredCommands  = $current.IgnoredCommands
+    }
+
+    if ($PSBoundParameters.ContainsKey('Enabled'))          { $config.Enabled          = $Enabled }
+    if ($PSBoundParameters.ContainsKey('MinCommandLength')) { $config.MinCommandLength = $MinCommandLength }
+    if ($PSBoundParameters.ContainsKey('MaxPipes'))         { $config.MaxPipes         = $MaxPipes }
+    if ($PSBoundParameters.ContainsKey('MaxArguments'))     { $config.MaxArguments     = $MaxArguments }
+    if ($PSBoundParameters.ContainsKey('MinCharsSaved'))    { $config.MinCharsSaved    = $MinCharsSaved }
+    if ($PSBoundParameters.ContainsKey('CooldownSeconds'))  { $config.CooldownSeconds  = $CooldownSeconds }
+    if ($PSBoundParameters.ContainsKey('MaxSuggestions'))   { $config.MaxSuggestions   = $MaxSuggestions }
+    if ($PSBoundParameters.ContainsKey('IgnoredCommands'))  { $config.IgnoredCommands  = $IgnoredCommands }
+
+    if ($PSBoundParameters.ContainsKey('AddIgnored')) {
+        $merged = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]$config.IgnoredCommands,
+            [System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in $AddIgnored) { [void]$merged.Add($item) }
+        $config.IgnoredCommands = [string[]]@($merged)
+    }
+
+    if ($PSBoundParameters.ContainsKey('RemoveIgnored')) {
+        $toRemove = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]$RemoveIgnored,
+            [System.StringComparer]::OrdinalIgnoreCase)
+        $config.IgnoredCommands = [string[]]@($config.IgnoredCommands | Where-Object { -not $toRemove.Contains($_) })
+    }
+
+    $config.Save()
+
+    if ($PassThru) {
+        Get-AliasFinderConfig
     }
 }
 
-# ----------------------------
-# Module Initialization
-# ----------------------------
-
-# Create aliases for Find-Alias function
-Set-Alias -Name af -Value Find-Alias -ErrorAction SilentlyContinue
-Set-Alias -Name alias-finder -Value Find-Alias -ErrorAction SilentlyContinue
-
-# Initialize configuration
-if (-not $global:PSAliasFinderConfig) {
-    $global:PSAliasFinderConfig = @{ AutoLoad = $false }
-}
-
-# Auto-enable hook if configured
-if ($global:PSAliasFinderConfig.AutoLoad -and (Get-Module PSReadLine -ErrorAction SilentlyContinue)) {
-    Set-AliasFinderHook
-}
-
-# Export module members
-Export-ModuleMember -Function Find-Alias, Test-CommandAlias, Set-AliasFinderHook, Set-AliasFinderConfig
-Export-ModuleMember -Alias af, alias-finder
+Export-ModuleMember -Function Find-Alias, Get-AliasFinderConfig, Set-AliasFinderConfig -Alias af, alias-finder

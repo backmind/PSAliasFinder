@@ -3,6 +3,12 @@
 publish/
 dist/
 
+# .NET build outputs
+bin/
+obj/
+src/bin/
+src/obj/
+
 # Test Results
 TestResults/
 *.trx
